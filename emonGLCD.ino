@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------------------------------------------------------------------------
-// emonGLCD Home Energy Monitor 1.1
+// emonGLCD Home Energy Monitor 1.2
 
 // Assumes power1 is domestic energy, power3 is heating energy
 // Shows total energy use (domestic and heating)
@@ -75,14 +75,15 @@ typedef struct { int temperature; } PayloadGLCD;
 PayloadGLCD emonglcd;
 
 int hour = 12, minute = 0;
-double usekwh = 0;
+int cval_all;                       // all electricity (heating and domestic)
+int cval_heat;                      // heating electricity
+double allkwh = 0;
 double heatkwh = 0;
 
 const int greenLED=6;               // Green tri-color LED
 const int redLED=9;                 // Red tri-color LED
 const int LDRpin=4;    		    // analog pin of onboard lightsensor 
-int cval_use;
-int cval_heat;
+
 
 //-------------------------------------------------------------------------------------------- 
 // Flow control
@@ -116,6 +117,9 @@ void setup()
 void loop()
 {
   
+  //--------------------------------------------------------------------------------------------
+  // Get data packet and adjust clock
+  //--------------------------------------------------------------------------------------------
   if (rf12_recvDone())
   {
     if (rf12_crc == 0 && (rf12_hdr & RF12_HDR_CTL) == 0)  // and no rf errors
@@ -142,26 +146,32 @@ void loop()
   {
     fast_update = millis();
     
+    // get clock info
     DateTime now = RTC.now();
     int last_hour = hour;
     hour = now.hour();
     minute = now.minute();
 
-    heatkwh += (emontx.power3 * 0.2) / 3600000;                    // power3 carries the heating power 
-    usekwh += (emontx.power1 * 0.2) / 3600000;                     // power 1 carries domestic power
-    if (last_hour == 23 && hour == 00) { usekwh = 0; heatkwh = 0; } // reset Kwh/d counter at midnight
-    cval_use = cval_use + (emontx.power1 - cval_use)*0.50;         // smooth transitions
-    cval_heat = cval_heat + (emontx.power3 - cval_heat)*0.50;         // smooth transitions
+    // get power data
+    cval_all = cval_all + (emontx.power1 - cval_all)*0.50;         // smooth transitions
+    cval_heat = cval_heat + (emontx.power2 - cval_heat)*0.50;      // smooth transitions
+    allkwh += (emontx.power1 * 0.2) / 3600000;                     // power1 carries total power    
+
+    // reset the power data at midnight
+    if (last_hour == 23 && hour == 00) { allkwh = 0; } // reset Kwh/d counter at midnight
     
-    draw_power_page( "POWER" ,cval_use+cval_heat, "USE", usekwh+heatkwh);
-    draw_temperature_time_footer(temp, mintemp, maxtemp, hour,minute);
+    // draw the display
+    draw_power_page( "POWER", cval_all, "USE", allkwh);
+    draw_temperature_time_footer(temp, mintemp, maxtemp, hour, minute);
     glcd.refresh();
 
+    // set the backlight brightness
     int LDR = analogRead(LDRpin);                     // Read the LDR Value so we can work out the light level in the room.
     int LDRbacklight = map(LDR, 0, 1023, 50, 250);    // Map the data from the LDR from 0-1023 (Max seen 1000) to var GLCDbrightness min/max
     LDRbacklight = constrain(LDRbacklight, 0, 255);   // Constrain the value to make sure its a PWM value 0-255
     if ((hour > 22) ||  (hour < 5)) glcd.backLight(0); else glcd.backLight(LDRbacklight);  
     
+    // set the heating LED
     if (cval_heat > 1000)                             // Light the red LED if the heating is drawing more than 1kW
     {
       analogWrite(redLED, 255);
@@ -173,14 +183,18 @@ void loop()
   if ((millis()-slow_update)>10000)
   {
     slow_update = millis();
-
+    
+    // get the temperature
     sensors.requestTemperatures();
     temp = (sensors.getTempCByIndex(0));
-    if (temp > maxtemp) maxtemp = temp;
-    if (temp < mintemp) mintemp = temp;
-   
     emonglcd.temperature = (int) (temp * 100);                          // set emonglcd payload
+    
+    // send the temperature
     rf12_sendNow(0, &emonglcd, sizeof emonglcd);                     //send temperature data via RFM12B using new rf12_sendNow wrapper -glynhudson
     rf12_sendWait(2);    
+
+    // capture max and min temperatures
+    if (temp > maxtemp) maxtemp = temp;
+    if (temp < mintemp) mintemp = temp;
   }
 }
